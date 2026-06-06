@@ -23,7 +23,7 @@ pub enum SiteKind {
         /// Path to the RC file.
         path: PathBuf,
     },
-    /// A Claude Code hook (SessionStart, etc.).
+    /// A Claude Code hook (`SessionStart`, etc.).
     Hook,
     /// Any other discovered launch path.
     Other {

@@ -70,7 +70,7 @@ fn test_sigpipe_no_panic() {
 
     // Create a pipe pair.
     let (reader, mut writer) = {
-        let mut fds = [0i32; 2];
+        let fds = [0i32; 2];
         // SAFETY: libc::pipe is always safe to call with a valid fd array.
         // However, we avoid unsafe by using std::process::Command piping instead.
         // We simulate the broken-pipe scenario by creating a Vec sink, closing it,

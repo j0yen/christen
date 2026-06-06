@@ -10,6 +10,8 @@
 //! classification and the action needed to route them through `agentns-claude`.
 //! Exits non-zero when ≥1 site is `Unwrapped` (wrapper installed, `-wintermute` kernel).
 
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process;
@@ -35,9 +37,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Load config.
-    let config_path = args
-        .config
-        .unwrap_or_else(ChristenConfig::default_path);
+    let config_path = args.config.unwrap_or_else(ChristenConfig::default_path);
     let config = ChristenConfig::load(&config_path)?;
 
     // Read kernel info from /proc/sys/kernel/osrelease.
@@ -63,7 +63,7 @@ fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // Output.
     match args.format {
-        OutputFormat::Table => print_table(&raw, &route_plan, &config)?,
+        OutputFormat::Table => print_table(&raw, &route_plan)?,
         OutputFormat::Json => {
             let json = serde_json::to_string_pretty(&route_plan)?;
             println!("{json}");
@@ -80,14 +80,11 @@ fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Returns `true` if `agentns-claude` is reachable on `$PATH`.
 fn which_wrapper() -> bool {
-    std::env::var_os("PATH")
-        .map(|p| {
-            std::env::split_paths(&p).any(|dir| {
-                dir.join("agentns-claude").exists()
-                    || dir.join("agent-wrap").exists()
-            })
+    std::env::var_os("PATH").is_some_and(|p| {
+        std::env::split_paths(&p).any(|dir| {
+            dir.join("agentns-claude").exists() || dir.join("agent-wrap").exists()
         })
-        .unwrap_or(false)
+    })
 }
 
 /// Naively discovers systemd user units from the configured directory.
@@ -109,11 +106,11 @@ fn discover_systemd_sites(config: &ChristenConfig) -> Vec<RawSite> {
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
-        // Extract ExecStart= line.
+        // Extract ExecStart= line (use split_once to avoid manual_split_once lint).
         let exec_start = content
             .lines()
             .find(|l| l.trim_start().starts_with("ExecStart="))
-            .and_then(|l| l.splitn(2, '=').nth(1))
+            .and_then(|l| l.split_once('=').map(|x| x.1))
             .unwrap_or("")
             .to_owned();
         sites.push(RawSite {
@@ -132,7 +129,6 @@ fn discover_systemd_sites(config: &ChristenConfig) -> Vec<RawSite> {
 fn print_table(
     raw: &[RawSite],
     route_plan: &christen::RoutePlan,
-    _config: &ChristenConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use christen::RouteAction;
 
@@ -141,8 +137,8 @@ fn print_table(
 
     writeln!(
         out,
-        "{:<35} {:<12} {:<12} {:<14} {}",
-        "SITE", "KIND", "WRAP", "INTENT", "ACTION"
+        "{:<35} {:<12} {:<12} {:<14} ACTION",
+        "SITE", "KIND", "WRAP", "INTENT"
     )?;
     writeln!(
         out,
@@ -177,7 +173,6 @@ fn print_table(
                 "{:<35} {:<12} {:<12} {:<14} {}",
                 site_id, kind_label, wrap_label, "—", action_label
             )?;
-            let _ = raw_site; // suppress unused warning
         }
     }
 

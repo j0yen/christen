@@ -10,7 +10,7 @@ use crate::model::{KernelInfo, LaunchSite, RawSite, RouteAction, RoutePlan, Site
 /// Marker strings that indicate a site's exec line already uses a wrapper.
 const WRAPPER_MARKERS: &[&str] = &["agentns-claude", "agent-wrap"];
 
-/// Returns `true` if `exec_line` already invokes a known wrapper binary.
+/// Returns `Some(marker)` if `exec_line` already invokes a known wrapper binary.
 fn detect_wrap(exec_line: &str) -> Option<String> {
     for marker in WRAPPER_MARKERS {
         if exec_line.contains(marker) {
@@ -22,7 +22,7 @@ fn detect_wrap(exec_line: &str) -> Option<String> {
 
 /// Returns `true` if the kernel release string indicates a wintermute kernel.
 ///
-/// A wintermute kernel is identified by the `-wintermute` suffix in the
+/// A wintermute kernel is identified by the `-wintermute` substring in the
 /// release string (e.g. `6.9.0-arch1-5-wintermute`).
 fn is_wintermute_kernel(release: &str) -> bool {
     release.contains("-wintermute")
@@ -50,13 +50,13 @@ pub fn intent_for(site_id: &str) -> &'static str {
 
 /// Classifies a single raw site into a [`LaunchSite`].
 fn classify_site(raw: &RawSite, config: &ChristenConfig) -> LaunchSite {
-    let wrap = match detect_wrap(&raw.exec_line) {
-        Some(via) => WrapState::Wrapped { via },
-        None => match &raw.kind {
+    let wrap = detect_wrap(&raw.exec_line).map_or(
+        match &raw.kind {
             SiteKind::ShellRc { .. } | SiteKind::Hook => WrapState::Uncertain,
             SiteKind::SystemdUnit { .. } | SiteKind::Other { .. } => WrapState::Unwrapped,
         },
-    };
+        |via| WrapState::Wrapped { via },
+    );
 
     // Prefer config override, then builtin table.
     let intent = config
@@ -70,6 +70,82 @@ fn classify_site(raw: &RawSite, config: &ChristenConfig) -> LaunchSite {
         kind: raw.kind.clone(),
         wrap,
         intent,
+    }
+}
+
+/// Accumulated counters, threaded through the per-site classifiers.
+struct Tallies {
+    to_wire: usize,
+    advised: usize,
+    already: usize,
+    skipped: usize,
+}
+
+/// Planning context bundled to stay within the argument-count lint threshold.
+struct PlanCtx<'a> {
+    kernel: &'a KernelInfo,
+    wrapper_installed: bool,
+    winter: bool,
+    config: &'a ChristenConfig,
+}
+
+/// Classify an `Unwrapped` site and update the tallies.
+fn classify_unwrapped(ctx: &PlanCtx<'_>, site: &LaunchSite, exec_line: &str, t: &mut Tallies) -> RouteAction {
+    if !ctx.winter {
+        t.skipped += 1;
+        let reason = if ctx.kernel.agent_ns {
+            "not a -wintermute kernel".to_owned()
+        } else {
+            "kernel lacks CONFIG_AGENT_NS support".to_owned()
+        };
+        RouteAction::Skip {
+            site: site.id.clone(),
+            reason,
+        }
+    } else if !ctx.wrapper_installed {
+        t.skipped += 1;
+        RouteAction::Skip {
+            site: site.id.clone(),
+            reason: "agentns-claude wrapper is not installed".to_owned(),
+        }
+    } else {
+        t.to_wire += 1;
+        let from = exec_line.to_owned();
+        let to = format!(
+            "agentns-claude --intent {} --budget {} -- {}",
+            site.intent, ctx.config.default_budget, from
+        );
+        RouteAction::Wire {
+            site: site.id.clone(),
+            from,
+            to,
+        }
+    }
+}
+
+/// Classify an `Uncertain` (shell-rc/hook) site and update the tallies.
+fn classify_uncertain(ctx: &PlanCtx<'_>, site: &LaunchSite, t: &mut Tallies) -> RouteAction {
+    if !ctx.winter || !ctx.wrapper_installed {
+        t.skipped += 1;
+        let reason = if ctx.winter {
+            "agentns-claude wrapper is not installed".to_owned()
+        } else {
+            "not a -wintermute kernel or no agent-ns support".to_owned()
+        };
+        RouteAction::Skip {
+            site: site.id.clone(),
+            reason,
+        }
+    } else {
+        t.advised += 1;
+        let snippet = format!(
+            "alias claude='agentns-claude --intent {} --budget {} -- claude'",
+            site.intent, ctx.config.default_budget
+        );
+        RouteAction::Advise {
+            site: site.id.clone(),
+            snippet,
+        }
     }
 }
 
@@ -91,90 +167,42 @@ pub fn plan(
     wrapper_installed: bool,
     config: &ChristenConfig,
 ) -> RoutePlan {
-    let winter = is_wintermute_kernel(&kernel.release) && kernel.agent_ns;
+    let ctx = PlanCtx {
+        kernel,
+        wrapper_installed,
+        winter: is_wintermute_kernel(&kernel.release) && kernel.agent_ns,
+        config,
+    };
 
     let mut actions: Vec<RouteAction> = Vec::with_capacity(raw.len());
-    let mut to_wire = 0usize;
-    let mut advised = 0usize;
-    let mut already = 0usize;
-    let mut skipped = 0usize;
+    let mut t = Tallies {
+        to_wire: 0,
+        advised: 0,
+        already: 0,
+        skipped: 0,
+    };
 
     for site_raw in raw {
         let site = classify_site(site_raw, config);
 
         let action = match &site.wrap {
             WrapState::Wrapped { .. } => {
-                already += 1;
+                t.already += 1;
                 RouteAction::AlreadyWrapped {
                     site: site.id.clone(),
                 }
             }
-            WrapState::Unwrapped => {
-                if !winter {
-                    skipped += 1;
-                    let reason = if !kernel.agent_ns {
-                        "kernel lacks CONFIG_AGENT_NS support".to_owned()
-                    } else {
-                        "not a -wintermute kernel".to_owned()
-                    };
-                    RouteAction::Skip {
-                        site: site.id.clone(),
-                        reason,
-                    }
-                } else if !wrapper_installed {
-                    skipped += 1;
-                    RouteAction::Skip {
-                        site: site.id.clone(),
-                        reason: "agentns-claude wrapper is not installed".to_owned(),
-                    }
-                } else {
-                    to_wire += 1;
-                    let from = site_raw.exec_line.clone();
-                    let to = format!(
-                        "agentns-claude --intent {} --budget {} -- {}",
-                        site.intent, config.default_budget, from
-                    );
-                    RouteAction::Wire {
-                        site: site.id.clone(),
-                        from,
-                        to,
-                    }
-                }
-            }
-            WrapState::Uncertain => {
-                // Shell RC / Hook sites: we can only advise.
-                if !winter || !wrapper_installed {
-                    skipped += 1;
-                    let reason = if !winter {
-                        "not a -wintermute kernel or no agent-ns support".to_owned()
-                    } else {
-                        "agentns-claude wrapper is not installed".to_owned()
-                    };
-                    RouteAction::Skip {
-                        site: site.id.clone(),
-                        reason,
-                    }
-                } else {
-                    advised += 1;
-                    let snippet = format!(
-                        "alias claude='agentns-claude --intent {} --budget {} -- claude'",
-                        site.intent, config.default_budget
-                    );
-                    RouteAction::Advise {
-                        site: site.id.clone(),
-                        snippet,
-                    }
-                }
-            }
+            WrapState::Unwrapped => classify_unwrapped(&ctx, &site, &site_raw.exec_line, &mut t),
+            WrapState::Uncertain => classify_uncertain(&ctx, &site, &mut t),
         };
         actions.push(action);
     }
 
     RoutePlan {
         actions,
-        to_wire,
-        advised,
-        already,
-        skipped,
+        to_wire: t.to_wire,
+        advised: t.advised,
+        already: t.already,
+        skipped: t.skipped,
     }
 }

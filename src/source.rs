@@ -38,7 +38,7 @@ pub struct FakeSource {
 impl FakeSource {
     /// Creates a new `FakeSource` from the given list of sites.
     #[must_use]
-    pub fn new(sites: Vec<RawSite>) -> Self {
+    pub const fn new(sites: Vec<RawSite>) -> Self {
         Self { sites }
     }
 }
