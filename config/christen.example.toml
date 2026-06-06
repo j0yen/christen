@@ -1,0 +1,14 @@
+# christen.toml — configuration for the christen launch-site planner.
+# Place at ~/.config/christen/christen.toml (or pass --config <path>).
+# All fields are optional; the defaults shown here are used if absent.
+
+# Budget string injected into every Wire action.
+default_budget = "wall=7200s,fork=2000"
+
+# Directory to scan for systemd user units.
+systemd_dir = "/home/jsy/.config/systemd/user"
+
+# Override the derived intent tag for a given site id.
+# Keys are unit filenames; values are intent tags.
+[intent_overrides]
+"claude-build.service" = "/build"

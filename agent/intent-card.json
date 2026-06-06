@@ -1,0 +1,120 @@
+{
+  "schema": "autobuilder.intent_card.v1",
+  "prd_source": "/home/jsy/wintermute/autobuilder/PRD-christen-plan.md",
+  "intent_slug": "christen-plan",
+  "root_motivation": "The wintermute agent-namespace substrate is built and booted but inert: every Claude session is born in the initial namespace because no launch path routes through agentns-claude. Before wiring can happen, there must be a typed, testable model of where sessions are born (LaunchSite), whether each is wrapped (WrapState), and what edit would route it through the wrapper (RouteAction). christen-plan builds that shared foundation — types, trait, FakeSource, and a pure plan() function — so that christen-route/christen-cap/christen-ledger have a contract to extend.",
+  "user_persona": "Joe Yen, running wintermute on an Arch Linux laptop; sees agent_session=00000000000000000000000000000000 in every session; wants to understand which launch sites are unwrapped and what edit would fix each, before any tool applies changes.",
+  "unfakeable_metric": {
+    "name": "acceptance_tests_passing_count",
+    "lower_is_better": false,
+    "harness_command": "cargo test --workspace --no-fail-fast 2>&1 | grep -c 'test .* ok'",
+    "target": 8
+  },
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "level": "MUST",
+      "description": "cargo build and cargo test succeed offline; a test asserts plan makes zero source calls (it operates only on the passed &[RawSite] + injected KernelInfo + wrapper_installed).",
+      "test": "tests/acceptance_ac1.rs::test_plan_no_source_calls"
+    },
+    {
+      "id": "AC2",
+      "level": "MUST",
+      "description": "LaunchSite, SiteKind, WrapState, RouteAction, RoutePlan are public and serde-(de)serializable; a round-trip test covers each.",
+      "test": "tests/acceptance_ac2.rs::test_serde_roundtrip_all_types"
+    },
+    {
+      "id": "AC3",
+      "level": "MUST",
+      "description": "ChristenConfig::load parses config/christen.example.toml; a fixture yields expected default_budget + systemd_dir + one intent_overrides entry, and an absent file yields documented defaults.",
+      "test": "tests/acceptance_ac3.rs::test_christen_config_load"
+    },
+    {
+      "id": "AC4",
+      "level": "MUST",
+      "description": "plan classifies correctly against FakeSource fixtures: systemd site whose exec line lacks agentns-claude on a -wintermute kernel with wrapper installed => Unwrapped + Wire; site whose exec line already contains agentns-claude => Wrapped + AlreadyWrapped; shell-rc site => Advise; any site on kernel with agent_ns:false or wrapper_installed:false => Skip with documented reason.",
+      "test": "tests/acceptance_ac4.rs::test_plan_classify_all_cases"
+    },
+    {
+      "id": "AC5",
+      "level": "MUST",
+      "description": "intent_for derives /build//dream//self-review/interactive for the four canonical site ids, and intent_overrides from config wins over the derivation; both covered by tests.",
+      "test": "tests/acceptance_ac5.rs::test_intent_for_derivation"
+    },
+    {
+      "id": "AC6",
+      "level": "MUST",
+      "description": "christen plan --format json emits one entry per site plus the RoutePlan tallies (to_wire/advised/already/skipped); schema matches the documented RoutePlan.",
+      "test": "tests/acceptance_ac6.rs::test_plan_json_output_schema"
+    },
+    {
+      "id": "AC7",
+      "level": "MUST",
+      "description": "christen plan exits non-zero when >=1 site is Unwrapped (wrapper installed, -wintermute kernel), zero otherwise; two integration cases driving FakeSource. christen plan | head -1 does not panic (SIGPIPE reset verified by a test that closes the read end early).",
+      "test": "tests/acceptance_ac7.rs::test_exit_code_and_sigpipe"
+    },
+    {
+      "id": "AC8",
+      "level": "MUST",
+      "description": "README documents the config format, the type surface, the intent_for derivation table, and the LaunchSiteSource trait so christen-detect/christen-route/christen-cap/christen-ledger have a contract to extend.",
+      "test": "tests/acceptance_ac8.rs::test_readme_documents_public_api"
+    }
+  ],
+  "scope": [
+    "Typed model of launch sites: LaunchSite, SiteKind, WrapState, RouteAction, RoutePlan",
+    "LaunchSiteSource trait abstracting discovery",
+    "FakeSource for in-memory fixtures/tests",
+    "Pure plan() function: &[RawSite] + KernelInfo + wrapper_installed -> RoutePlan",
+    "ChristenConfig loading from TOML with defaults",
+    "intent_for() derivation table with config override support",
+    "christen plan subcommand: table and --format json output",
+    "Exit non-zero on unwrapped sites (wintermute kernel + wrapper installed)"
+  ],
+  "non_goals": [
+    "Does not apply any changes to launch sites (that is christen-route)",
+    "Does not read /proc for live session data (that is christen-detect)",
+    "Does not set capabilities on binaries (that is christen-cap)",
+    "Does not parse systemd unit files from disk (that is christen-route's SystemdSource)",
+    "Does not manage audit logs or session counters (that is christen-ledger)",
+    "Does not interact with agorabus or any runtime daemon"
+  ],
+  "hard_constraints": {
+    "rust_edition": "2024",
+    "target_kind": "cli",
+    "deny_unsafe": true,
+    "max_deps": 10,
+    "msrv": "1.85",
+    "additional": {
+      "no_let_chains": "MSRV 1.85 — let chains require 1.88; use if-let ladders or match instead",
+      "sigpipe_reset": "sigpipe::reset() must be first call in main() per self_sigpipe_panic_toolkit"
+    }
+  },
+  "five_whys_trace": [
+    {
+      "why": 1,
+      "q": "Why do you need a launch-site model?",
+      "a": "Because agent_session is always 00000000 — sessions never enter the agent namespace — and the first step to fix that is knowing which launch sites are unwrapped."
+    },
+    {
+      "why": 2,
+      "q": "Why does identifying unwrapped sites require a separate crate?",
+      "a": "Because christen-route, christen-cap, christen-detect, and christen-ledger all need the same LaunchSite/WrapState/RouteAction types; a shared corpus crate is the prerequisite so they don't duplicate the model."
+    },
+    {
+      "why": 3,
+      "q": "Why must plan() be pure?",
+      "a": "Because purity makes the classification logic independently testable via FakeSource without touching the filesystem, and ensures christen-route/christen-cap can call plan() safely before applying any changes."
+    }
+  ],
+  "ambiguities_resolved": [
+    {
+      "question": "Should christen-plan also include a real SystemdSource that reads ~/.config/systemd/user/?",
+      "resolution": "No. SystemdSource belongs in christen-route. christen-plan ships only FakeSource for tests. The trait LaunchSiteSource provides the contract."
+    },
+    {
+      "question": "Should plan() read /proc/sys/kernel/osrelease to detect -wintermute kernel?",
+      "resolution": "No. KernelInfo is injected as a parameter. The caller (main) reads the OS release; plan() stays pure."
+    }
+  ],
+  "created_at": "2026-06-05T00:00:00Z"
+}
