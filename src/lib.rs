@@ -33,6 +33,7 @@ pub mod config;
 pub mod model;
 pub mod planner;
 pub mod probe;
+pub mod route;
 pub mod source;
 
 pub use cap::{
@@ -49,4 +50,5 @@ pub use probe::{
     NsReading, NsState, ProbeOutput, ProcReader, RealProcReader, Verdict,
     INIT_AGENT_INODE,
 };
+pub use route::{apply_route, render_dropin, DropIn, RouteError, SystemdSource};
 pub use source::{FakeSource, LaunchSiteSource};
