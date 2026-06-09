@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.0 — 2026-06-09
+
+feat(cap): add `christen cap` subcommand — detect cap_sys_admin+ep file capability on launcher binaries, print exact `sudo setcap` command (never auto-executes), verify via sbx/agent_session read. AC1-5 tests green; AC6 deferred (wintermute kernel required).
+
 ## [Unreleased]
 
 ### Added
