@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! christen plan [--format table|json] [--config <path>]
+//! christen cap  [--verify] [--format table|json]
 //! ```
 //!
 //! Prints a table (or JSON) of all discovered launch sites with their
@@ -18,6 +19,10 @@ use std::process;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use christen::{
+    cap_plan, default_launcher_paths, verify_cap, CapPlanEntry, CapReader, GetcapReader,
+    VerifyResult, SCOPE_EXPLAINER,
+};
 use christen::{plan, ChristenConfig, FakeSource, KernelInfo, LaunchSiteSource, RawSite, SiteKind};
 
 fn main() {
@@ -32,8 +37,130 @@ fn main() {
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Plan(args) => run_plan(args),
+        Commands::Cap(args) => run_cap(&args),
     }
 }
+
+// ── christen cap ──────────────────────────────────────────────────────────────
+
+fn run_cap(args: &CapArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let reader = GetcapReader;
+    let binaries = collect_launcher_caps(&reader);
+    let cap_plan_result = cap_plan(&binaries);
+
+    match args.format {
+        OutputFormat::Json => print_cap_json(&cap_plan_result)?,
+        OutputFormat::Table => print_cap_table(&cap_plan_result)?,
+    }
+
+    if args.verify {
+        print_cap_verify(&binaries)?;
+    }
+
+    Ok(())
+}
+
+type CapBinaries = Vec<(PathBuf, christen::CapState)>;
+
+fn collect_launcher_caps(reader: &dyn CapReader) -> CapBinaries {
+    let (agentns, agent_wrap) = default_launcher_paths();
+    let mut binaries: CapBinaries = Vec::new();
+    if let Some(p) = agentns {
+        let state = reader.caps(&p);
+        binaries.push((p, state));
+    }
+    if let Some(p) = agent_wrap {
+        let state = reader.caps(&p);
+        binaries.push((p, state));
+    }
+    if binaries.is_empty() {
+        eprintln!(
+            "christen cap: neither agentns-claude nor agent-wrap found on PATH.\n\
+             Install the agent-namespace tools first."
+        );
+        process::exit(1);
+    }
+    binaries
+}
+
+fn print_cap_json(plan: &christen::CapPlan) -> Result<(), Box<dyn std::error::Error>> {
+    let out = serde_json::json!({
+        "scope_explainer": SCOPE_EXPLAINER,
+        "binaries": plan.entries.iter().map(cap_entry_to_json).collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+fn cap_entry_to_json(e: &CapPlanEntry) -> serde_json::Value {
+    match e {
+        CapPlanEntry::Grant { path, command } => serde_json::json!({
+            "path": path, "state": "absent", "action": "grant", "command": command
+        }),
+        CapPlanEntry::AlreadyGranted { path } => serde_json::json!({
+            "path": path, "state": "present", "action": "already_granted"
+        }),
+        CapPlanEntry::Blocked { path, reason } => serde_json::json!({
+            "path": path, "state": "blocked", "action": "blocked", "reason": reason
+        }),
+    }
+}
+
+fn print_cap_table(plan: &christen::CapPlan) -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "{SCOPE_EXPLAINER}")?;
+    for entry in &plan.entries {
+        match entry {
+            CapPlanEntry::Grant { path, command } => {
+                writeln!(out, "  ABSENT  {}", path.display())?;
+                writeln!(out, "    Run:  {command}")?;
+            }
+            CapPlanEntry::AlreadyGranted { path } => {
+                writeln!(out, "  PRESENT {}", path.display())?;
+                writeln!(out, "    (`cap_sys_admin+ep` already granted — no action needed)")?;
+            }
+            CapPlanEntry::Blocked { path, reason } => {
+                writeln!(out, "  BLOCKED {}", path.display())?;
+                writeln!(out, "    Reason: {reason}")?;
+            }
+        }
+        writeln!(out)?;
+    }
+    Ok(())
+}
+
+fn print_cap_verify(
+    binaries: &[(PathBuf, christen::CapState)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    writeln!(out, "=== --verify ===")?;
+    for (path, _) in binaries {
+        let result = verify_cap(path);
+        match &result {
+            VerifyResult::Live { session_id } => {
+                writeln!(out, "  LIVE  {}: agent_session = {session_id}", path.display())?;
+            }
+            VerifyResult::EpermFallback => {
+                writeln!(
+                    out,
+                    "  EPERM-FALLBACK  {}: agent_session is all-zeros (cap not yet granted)",
+                    path.display()
+                )?;
+            }
+            VerifyResult::Absent => {
+                writeln!(out, "  ABSENT  {}: kernel does not have CONFIG_AGENT_NS=y", path.display())?;
+            }
+            VerifyResult::Error { detail } => {
+                writeln!(out, "  ERROR  {}: {detail}", path.display())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── christen plan ─────────────────────────────────────────────────────────────
 
 fn run_plan(args: PlanArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Load config.
@@ -186,6 +313,8 @@ fn print_table(
     Ok(())
 }
 
+// ── CLI types ─────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Parser)]
 #[command(name = "christen", about = "Launch-site model and route plan for agent-namespace wiring")]
 struct Cli {
@@ -197,6 +326,9 @@ struct Cli {
 enum Commands {
     /// Print the route plan for all discovered launch sites.
     Plan(PlanArgs),
+    /// Detect whether launcher binaries carry `cap_sys_admin+ep`; print the exact
+    /// `sudo setcap` line needed (never executes it).
+    Cap(CapArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -208,6 +340,18 @@ struct PlanArgs {
     /// Path to christen.toml (default: ~/.config/christen/christen.toml).
     #[arg(long)]
     config: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
+struct CapArgs {
+    /// After detecting cap state, verify by spawning the launcher under sbx
+    /// and reading back the child's `agent_session` (read-only; no setcap).
+    #[arg(long)]
+    verify: bool,
+
+    /// Output format.
+    #[arg(long, default_value = "table")]
+    format: OutputFormat,
 }
 
 #[derive(Debug, Clone, ValueEnum)]

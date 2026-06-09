@@ -28,11 +28,16 @@
 //! assert_eq!(route_plan.to_wire, 1);
 //! ```
 
+pub mod cap;
 pub mod config;
 pub mod model;
 pub mod planner;
 pub mod source;
 
+pub use cap::{
+    cap_plan, default_launcher_paths, verify_cap, CapPlan, CapPlanEntry, CapReader, CapState,
+    FakeReader, GetcapReader, VerifyResult, SCOPE_EXPLAINER,
+};
 pub use config::ChristenConfig;
 pub use model::{
     KernelInfo, LaunchSite, RawSite, RouteAction, RoutePlan, SiteKind, WrapState,
