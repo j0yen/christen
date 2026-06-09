@@ -31,6 +31,7 @@
 pub mod config;
 pub mod model;
 pub mod planner;
+pub mod probe;
 pub mod source;
 
 pub use config::ChristenConfig;
@@ -38,4 +39,9 @@ pub use model::{
     KernelInfo, LaunchSite, RawSite, RouteAction, RoutePlan, SiteKind, WrapState,
 };
 pub use planner::{intent_for, plan};
+pub use probe::{
+    apply_docket_op, classify, verdict, Counters, DocketOp, FakeNsReader, InitReason,
+    NsReading, NsState, ProbeOutput, ProcReader, RealProcReader, Verdict,
+    INIT_AGENT_INODE,
+};
 pub use source::{FakeSource, LaunchSiteSource};
