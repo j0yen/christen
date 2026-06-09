@@ -49,6 +49,62 @@ the vision extends this crate.
    derivation table, and the `LaunchSiteSource` trait so christen-detect /
    christen-route / christen-cap / christen-ledger have a contract to extend.
 
+## christen probe — namespace state classifier
+
+`christen probe` reads the `/proc` agent-namespace surface for the current
+process (or a target PID) and classifies it into one of four states with
+correct, actionable prose.
+
+### The four states
+
+| State | Meaning | `ok` | Docket op |
+|-------|---------|------|-----------|
+| `absent` | `/proc/$pid/ns/agent` symlink missing | `true` on stock kernel, `false` on `-wintermute` | `Report` (wintermute only) |
+| `init` | Session id is all-zeros or ns inode is the init inode | `true` (not a fault) | `Report` actionable (wintermute + wrapper) or `None` |
+| `live` | Non-zero session id — session is in its own namespace | `true` | `Resolve agentns-session-zeros` |
+| `malformed` | Surface present but unparseable | `false` | `Report` |
+
+### Init-inode detection
+
+On Linux the agent-namespace init inode is `4026531996`. A process born in
+the initial namespace (before any launch site is routed through `agentns-claude`)
+will have `/proc/self/ns/agent -> agent:[4026531996]` and a session id of all
+zeros. This is **not** a fault — it means the wrapper is installed but exec
+lines have not been rewritten yet. The fix is `christen route`.
+
+### Anti-regression invariant
+
+The string `"registration failed"` **never** appears in any `prose` returned
+by `christen probe`. This invariant is asserted by a dedicated test
+(`probe_ac3_antiregression`) that iterates every `NsState` variant.
+
+### `--emit` docket contract
+
+When `--emit` is passed, `christen probe` shells `docket` with the mapped op:
+
+- `live` → `docket resolve agentns-session-zeros`
+- `init` (UnwrappedExpected, -wintermute) → `docket report --severity warn --title "agentns init NS — launches not routed through agentns-claude; run christen route" ...`
+- `absent` (-wintermute) → `docket report --severity warn ...`
+- any stock-kernel state → no docket op
+
+A missing `docket` binary is non-fatal: the probe prints its classification
+and exits on state, not on the docket failure.
+
+### Usage
+
+```sh
+# Classify current process (human-readable text)
+christen probe
+
+# Classify current process and apply docket edge-trigger
+christen probe --emit
+
+# Classify a specific PID as JSON
+christen probe --pid 1234 --format json
+
+# JSON schema includes: state, ok, prose, session_hex?, intent?, docket_op
+```
+
 ## Install
 
 ```sh

@@ -3,13 +3,18 @@
 //! ## Usage
 //!
 //! ```text
-//! christen plan [--format table|json] [--config <path>]
-//! christen cap  [--verify] [--format table|json]
+//! christen plan  [--format table|json] [--config <path>]
+//! christen cap   [--verify] [--format table|json]
+//! christen probe [--pid N] [--emit] [--format json]
 //! ```
 //!
-//! Prints a table (or JSON) of all discovered launch sites with their
+//! `plan` prints a table (or JSON) of all discovered launch sites with their
 //! classification and the action needed to route them through `agentns-claude`.
 //! Exits non-zero when ≥1 site is `Unwrapped` (wrapper installed, `-wintermute` kernel).
+//!
+//! `probe` reads the `/proc` agent-namespace surface for the current process
+//! (or a target PID) and classifies it as `init` / `live` / `absent` / `malformed`.
+//! With `--emit`, also applies the docket edge-trigger via the `docket` CLI.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -23,7 +28,10 @@ use christen::{
     cap_plan, default_launcher_paths, verify_cap, CapPlanEntry, CapReader, GetcapReader,
     VerifyResult, SCOPE_EXPLAINER,
 };
-use christen::{plan, ChristenConfig, FakeSource, KernelInfo, LaunchSiteSource, RawSite, SiteKind};
+use christen::{
+    apply_docket_op, classify, plan, verdict, ChristenConfig, FakeSource, KernelInfo,
+    LaunchSiteSource, NsState, ProbeOutput, ProcReader, RawSite, RealProcReader, SiteKind,
+};
 
 fn main() {
     sigpipe::reset();
@@ -38,6 +46,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Plan(args) => run_plan(args),
         Commands::Cap(args) => run_cap(&args),
+        Commands::Probe(args) => run_probe(args),
     }
 }
 
@@ -157,6 +166,49 @@ fn print_cap_verify(
             }
         }
     }
+    Ok(())
+}
+
+// ── christen probe ────────────────────────────────────────────────────────────
+
+fn run_probe(args: ProbeArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let reader = RealProcReader;
+    let reading = reader.read(args.pid)?;
+    let kernel_is_wintermute = reading.kernel_is_wintermute;
+    let state = classify(&reading);
+    let v = verdict(&state, kernel_is_wintermute);
+
+    let output = ProbeOutput::from_state_verdict(&state, &v);
+
+    // Print output.
+    match args.format {
+        ProbeFormat::Text => {
+            let state_label = match &state {
+                NsState::Absent => "absent",
+                NsState::Init { .. } => "init",
+                NsState::Live { .. } => "live",
+                NsState::Malformed { .. } => "malformed",
+            };
+            println!("state: {state_label}");
+            println!("ok:    {}", v.ok);
+            println!("{}", v.prose);
+        }
+        ProbeFormat::Json => {
+            let json = serde_json::to_string_pretty(&output)?;
+            println!("{json}");
+        }
+    }
+
+    // Apply docket op if requested.
+    if args.emit {
+        apply_docket_op(&v.docket)?;
+    }
+
+    // Exit non-zero on fault states (Absent or Malformed on wintermute kernel).
+    if !v.ok {
+        process::exit(1);
+    }
+
     Ok(())
 }
 
@@ -329,6 +381,8 @@ enum Commands {
     /// Detect whether launcher binaries carry `cap_sys_admin+ep`; print the exact
     /// `sudo setcap` line needed (never executes it).
     Cap(CapArgs),
+    /// Probe the /proc agent-namespace surface and classify the state.
+    Probe(ProbeArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -354,10 +408,33 @@ struct CapArgs {
     format: OutputFormat,
 }
 
+#[derive(Debug, Parser)]
+struct ProbeArgs {
+    /// Target PID to probe (default: current process).
+    #[arg(long)]
+    pid: Option<u32>,
+
+    /// Apply the docket edge-trigger (shell `docket` with the mapped op).
+    #[arg(long)]
+    emit: bool,
+
+    /// Output format.
+    #[arg(long, default_value = "text")]
+    format: ProbeFormat,
+}
+
 #[derive(Debug, Clone, ValueEnum)]
 enum OutputFormat {
     /// Human-readable table.
     Table,
+    /// Machine-readable JSON.
+    Json,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum ProbeFormat {
+    /// Human-readable text.
+    Text,
     /// Machine-readable JSON.
     Json,
 }
