@@ -1,158 +1,60 @@
 # christen
 
-Launch-site model and route plan for agent-namespace wiring.
+The wintermute agent-namespace substrate is built and booted but inert:
 
-`christen` is the foundational crate of the christen fleet. It provides:
-
-- **Shared types** — `LaunchSite`, `SiteKind`, `WrapState`, `RouteAction`, `RoutePlan`
-- **`LaunchSiteSource` trait** — the contract for discovery that downstream crates implement
-- **`FakeSource`** — in-memory fixture source for tests
-- **`plan()`** — a pure function that turns `&[RawSite]` + `KernelInfo` + `wrapper_installed` into a `RoutePlan`
-- **`christen plan`** — subcommand that prints (or JSON-emits) the route plan for all discovered launch sites
-
-## Why this exists
+## Overview
 
 The wintermute agent-namespace substrate is built and booted but inert:
-every Claude session reads `agent_session = 00000000...` because no launch path
-routes through `agentns-claude`. `christen-plan` is the prerequisite — it
-models where sessions are born and what change would fix each site — so that
-`christen-route` can apply the changes, `christen-cap` can set capabilities,
-`christen-detect` can measure live state, and `christen-ledger` can audit history.
+every session is born in the *initial* namespace with session id `0…0`
+because no launch path routes through `agentns-claude`. Before anything can
+fix that, there must be a typed, testable model of **where sessions are
+born** (`LaunchSite`), **whether each is wrapped** (`WrapState`), and **what
+edit would route it through the wrapper** (`RouteAction`). **christen-plan**
+creates the `christen` workspace and that foundation: the shared types, a
+`LaunchSiteSource` trait that abstracts discovery, a `FakeSource` for tests,
+and a **pure** `plan(sites, kernel, wrapper_installed)` that emits a
+print-only `RoutePlan`. `christen plan` shows it at a glance. The rest of
+the vision extends this crate.
 
-## Usage
 
+## Acceptance
+
+
+1. `cargo build` and `cargo test` succeed offline; a test asserts `plan`
+   makes **zero** source calls (it operates only on the passed `&[RawSite]`
+   + injected `KernelInfo` + `wrapper_installed`).
+2. `LaunchSite`, `SiteKind`, `WrapState`, `RouteAction`, `RoutePlan` are
+   public and `serde`-(de)serializable; a round-trip test covers each.
+3. `ChristenConfig::load` parses `config/christen.example.toml`; a fixture
+   yields the expected `default_budget` + `systemd_dir` + one
+   `intent_overrides` entry, and an absent file yields documented defaults.
+4. `plan` classifies correctly against `FakeSource` fixtures: a systemd site
+   whose exec line lacks `agentns-claude` on a `-wintermute` kernel with the
+   wrapper installed → `Unwrapped` + `Wire` (the `to` line contains
+   `agentns-claude --intent <derived> --budget <default> --`); a site whose
+   exec line already contains `agentns-claude` → `Wrapped` + `AlreadyWrapped`;
+   a shell-rc site → `Advise`; any site on a kernel with `agent_ns:false` or
+   `wrapper_installed:false` → `Skip` with the documented reason.
+5. `intent_for` derives `/build`/`/dream`/`/self-review`/`interactive` for
+   the four canonical site ids, and `intent_overrides` from config wins over
+   the derivation; both covered by tests.
+6. `christen plan --format json` emits one entry per site plus the
+   `RoutePlan` tallies (`to_wire`/`advised`/`already`/`skipped`); schema
+   matches the documented `RoutePlan`.
+7. `christen plan` exits non-zero when ≥1 site is `Unwrapped` (wrapper
+   installed, `-wintermute` kernel), zero otherwise; two integration cases
+   driving `FakeSource`. `christen plan | head -1` does not panic (SIGPIPE
+   reset verified by a test that closes the read end early).
+8. README documents the config format, the type surface, the `intent_for`
+   derivation table, and the `LaunchSiteSource` trait so christen-detect /
+   christen-route / christen-cap / christen-ledger have a contract to extend.
+
+## Install
+
+```sh
+cargo install --path .
 ```
-christen plan [--format table|json] [--config <path>]
-```
-
-Exits non-zero when ≥1 site is `Unwrapped` on a `-wintermute` kernel with the
-wrapper installed (so a hook can gate on it).
-
-## Configuration
-
-Config lives at `~/.config/christen/christen.toml` (optional). An example:
-
-```toml
-default_budget = "wall=7200s,fork=2000"
-systemd_dir = "/home/jsy/.config/systemd/user"
-
-[intent_overrides]
-"claude-build.service" = "/build"
-```
-
-All fields are optional. `ChristenConfig::load(path)` returns defaults silently
-when the file is absent. Loading is pure — no filesystem scan, no unit parse,
-no `/proc` read.
-
-## Type surface
-
-### `SiteKind`
-
-Where a session is spawned:
-
-```rust
-pub enum SiteKind {
-    SystemdUnit { unit: String, exec_start: String },
-    ShellRc { path: PathBuf },
-    Hook,
-    Other { note: String },
-}
-```
-
-### `WrapState`
-
-Whether a site routes through the agent-namespace wrapper:
-
-```rust
-pub enum WrapState {
-    Unwrapped,
-    Wrapped { via: String },
-    Uncertain,
-}
-```
-
-Detection is pure string-match on the exec line — no live `/proc` read.
-That is `christen-detect`'s job.
-
-### `LaunchSite`
-
-A discovered site with its classification:
-
-```rust
-pub struct LaunchSite {
-    pub id: String,
-    pub kind: SiteKind,
-    pub wrap: WrapState,
-    pub intent: String,    // derived intent tag, e.g. "/build"
-}
-```
-
-### `RouteAction`
-
-A declarative change (no side effects):
-
-```rust
-pub enum RouteAction {
-    Wire { site, from, to },        // rewrite exec line to use agentns-claude
-    Advise { site, snippet },       // shell snippet for user sites
-    AlreadyWrapped { site },        // no-op
-    Skip { site, reason },          // kernel or wrapper absent
-}
-```
-
-### `RoutePlan`
-
-```rust
-pub struct RoutePlan {
-    pub actions: Vec<RouteAction>,
-    pub to_wire: usize,
-    pub advised: usize,
-    pub already: usize,
-    pub skipped: usize,
-}
-```
-
-## `intent_for` derivation table
-
-| Site id | Derived intent |
-|---|---|
-| `claude-build.service` | `/build` |
-| `claude-dream.service` | `/dream` |
-| `claude-self-review.service` | `/self-review` |
-| `interactive` | `interactive` |
-| _(any other)_ | `unknown` |
-
-`intent_overrides` in `christen.toml` wins over the built-in table.
-
-## `LaunchSiteSource` trait
-
-```rust
-pub trait LaunchSiteSource {
-    fn sites(&self) -> Result<Vec<RawSite>, SourceError>;
-}
-```
-
-`plan()` does **not** call this trait — the caller resolves sites and passes
-`&[RawSite]` directly. The trait exists so `christen-route` (real `SystemdSource`),
-`christen-detect` (reads `/proc`), and `christen-cap` all share one contract.
-
-`FakeSource` is the in-memory implementation for tests.
-
-## Downstream crates
-
-| Crate | Role |
-|---|---|
-| `christen-route` | Implements `SystemdSource`, applies `Wire` actions |
-| `christen-cap` | Sets `cap_sys_admin+ep` on wrapper binaries |
-| `christen-detect` | Reads live `/proc/self/ns/agent` and `agent_session` |
-| `christen-ledger` | Audits session-id history against the plan |
-
-All extend the `LaunchSiteSource` trait and accept a `RoutePlan` from `plan()`.
-
-## MSRV
-
-Rust 1.85. No let-chains.
 
 ## License
 
-MIT OR Apache-2.0
+MIT © Joe Yen
