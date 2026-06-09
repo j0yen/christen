@@ -6,6 +6,7 @@
 //! christen plan  [--format table|json] [--config <path>]
 //! christen cap   [--verify] [--format table|json]
 //! christen probe [--pid N] [--emit] [--format json]
+//! christen route [--apply] [--unit <name>] [--config <path>]
 //! ```
 //!
 //! `plan` prints a table (or JSON) of all discovered launch sites with their
@@ -15,6 +16,10 @@
 //! `probe` reads the `/proc` agent-namespace surface for the current process
 //! (or a target PID) and classifies it as `init` / `live` / `absent` / `malformed`.
 //! With `--emit`, also applies the docket edge-trigger via the `docket` CLI.
+//!
+//! `route` prints the drop-in files that would route each systemd unit through
+//! `agentns-claude`. With `--apply`, writes the drop-ins (never runs
+//! `daemon-reload` or `restart`).
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -29,8 +34,9 @@ use christen::{
     VerifyResult, SCOPE_EXPLAINER,
 };
 use christen::{
-    apply_docket_op, classify, plan, verdict, ChristenConfig, FakeSource, KernelInfo,
+    apply_docket_op, apply_route, classify, plan, verdict, ChristenConfig, FakeSource, KernelInfo,
     LaunchSiteSource, NsState, ProbeOutput, ProcReader, RawSite, RealProcReader, SiteKind,
+    SystemdSource,
 };
 
 fn main() {
@@ -47,6 +53,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Plan(args) => run_plan(args),
         Commands::Cap(args) => run_cap(&args),
         Commands::Probe(args) => run_probe(args),
+        Commands::Route(args) => run_route(args),
     }
 }
 
@@ -365,6 +372,42 @@ fn print_table(
     Ok(())
 }
 
+// ── christen route ────────────────────────────────────────────────────────────
+
+fn run_route(args: RouteArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = args.config.unwrap_or_else(ChristenConfig::default_path);
+    let config = ChristenConfig::load(&config_path)?;
+
+    // Read kernel info.
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .unwrap_or_else(|_| "unknown".to_owned())
+        .trim()
+        .to_owned();
+    let agent_ns = std::path::Path::new("/proc/self/ns/agent").exists();
+    let kernel = KernelInfo { agent_ns, release };
+    let wrapper_installed = which_wrapper();
+
+    // Discover sites via SystemdSource (includes synthetic ShellRc site).
+    let source = SystemdSource::new(config.systemd_dir.clone());
+    let raw = source.sites()?;
+
+    // Compute the plan.
+    let route_plan = plan(&raw, &kernel, wrapper_installed, &config);
+
+    // Apply or print.
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    apply_route(
+        &route_plan,
+        &config,
+        !args.apply,
+        args.unit.as_deref(),
+        &mut out,
+    )?;
+
+    Ok(())
+}
+
 // ── CLI types ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Parser)]
@@ -383,6 +426,9 @@ enum Commands {
     Cap(CapArgs),
     /// Probe the /proc agent-namespace surface and classify the state.
     Probe(ProbeArgs),
+    /// Print (or write with --apply) systemd drop-in overrides that route each
+    /// launch site through agentns-claude. Never runs daemon-reload or restart.
+    Route(RouteArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -421,6 +467,21 @@ struct ProbeArgs {
     /// Output format.
     #[arg(long, default_value = "text")]
     format: ProbeFormat,
+}
+
+#[derive(Debug, Parser)]
+struct RouteArgs {
+    /// Write drop-in files to disk; print (but do not run) daemon-reload lines.
+    #[arg(long)]
+    apply: bool,
+
+    /// Restrict to a single unit name (e.g. `claude-build.service`).
+    #[arg(long)]
+    unit: Option<String>,
+
+    /// Path to christen.toml (default: ~/.config/christen/christen.toml).
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
