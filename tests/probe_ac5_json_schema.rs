@@ -2,8 +2,8 @@
 //! schema including docket_op; a Live fixture and an Init fixture each covered.
 
 use christen::probe::{
-    classify, verdict, DocketOp, FakeNsReader, InitReason, NsReading, NsState, ProbeOutput,
-    ProcReader, INIT_AGENT_INODE,
+    classify, verdict, FakeNsReader, InitReason, NsReading, NsState, ProbeOutput, ProcReader,
+    INIT_AGENT_INODE,
 };
 
 fn make_live_reading() -> NsReading {

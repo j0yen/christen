@@ -38,6 +38,9 @@ use christen::{
     LaunchSiteSource, NsState, ProbeOutput, ProcReader, RawSite, RealProcReader, SiteKind,
     SystemdSource,
 };
+use christen::{
+    cmd_close, cmd_install, cmd_open, delta, summarize, FsStore, LedgerStore, RealCounterReader,
+};
 
 fn main() {
     sigpipe::reset();
@@ -54,6 +57,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Cap(args) => run_cap(&args),
         Commands::Probe(args) => run_probe(args),
         Commands::Route(args) => run_route(args),
+        Commands::Ledger(args) => run_ledger(args),
     }
 }
 
@@ -408,6 +412,126 @@ fn run_route(args: RouteArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// ── christen ledger ───────────────────────────────────────────────────────────
+
+fn run_ledger(args: LedgerArgs) -> Result<(), Box<dyn std::error::Error>> {
+    match args.command {
+        LedgerCommand::Open => {
+            let reader = RealCounterReader;
+            let store = open_fs_store()?;
+            cmd_open(&reader, &store)?;
+        }
+        LedgerCommand::Close => {
+            let reader = RealCounterReader;
+            let store = open_fs_store()?;
+            cmd_close(&reader, &store)?;
+        }
+        LedgerCommand::List(list_args) => {
+            let store = open_fs_store()?;
+            run_ledger_list(&store, &list_args)?;
+        }
+        LedgerCommand::Show(show_args) => {
+            let store = open_fs_store()?;
+            run_ledger_show(&store, &show_args.id)?;
+        }
+        LedgerCommand::Install => {
+            cmd_install();
+        }
+    }
+    Ok(())
+}
+
+fn open_fs_store() -> Result<FsStore, Box<dyn std::error::Error>> {
+    let dir = FsStore::default_dir()?;
+    Ok(FsStore::new(dir)?)
+}
+
+fn run_ledger_list(
+    store: &dyn LedgerStore,
+    args: &LedgerListArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut entries = store.list()?;
+
+    if args.open_only {
+        entries.retain(|e| e.closed_at.is_none());
+    }
+
+    // Sort by opened_at ascending.
+    entries.sort_by_key(|e| e.opened_at);
+
+    match args.format {
+        LedgerFormat::Json => {
+            let summaries: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|e| {
+                    let s = summarize(e);
+                    serde_json::json!({
+                        "session_id": e.session_id,
+                        "intent": e.intent,
+                        "budget": e.budget,
+                        "opened_at": e.opened_at,
+                        "closed_at": e.closed_at,
+                        "closed": s.closed,
+                        "wall_ms": s.wall_ms,
+                        "top_mover": s.top_mover,
+                        "kernel": e.kernel,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&summaries)?);
+        }
+        LedgerFormat::Table => {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            writeln!(
+                out,
+                "{:<20} {:<12} {:<10} {:<8} {}",
+                "SESSION", "INTENT", "WALL_MS", "CLOSED", "TOP_MOVER"
+            )?;
+            writeln!(
+                out,
+                "{:-<20} {:-<12} {:-<10} {:-<8} {:-<20}",
+                "", "", "", "", ""
+            )?;
+            for entry in &entries {
+                let s = summarize(entry);
+                let wall = s
+                    .wall_ms
+                    .map(|ms| ms.to_string())
+                    .unwrap_or_else(|| "—".to_owned());
+                let closed = if s.closed { "yes" } else { "no" };
+                writeln!(
+                    out,
+                    "{:<20} {:<12} {:<10} {:<8} {}",
+                    s.id_prefix, s.intent, wall, closed, s.top_mover
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_ledger_show(
+    store: &dyn LedgerStore,
+    session_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let entry = store
+        .get(session_id)?
+        .ok_or_else(|| format!("session not found: {session_id}"))?;
+
+    println!("{}", serde_json::to_string_pretty(&entry)?);
+
+    if let Some(ref end) = entry.end {
+        let d = delta(&entry.start, end);
+        println!("\ndelta:");
+        println!("{}", serde_json::to_string_pretty(&d)?);
+    } else {
+        println!("\n(session still open — no delta)");
+    }
+
+    Ok(())
+}
+
 // ── CLI types ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Parser)]
@@ -429,6 +553,8 @@ enum Commands {
     /// Print (or write with --apply) systemd drop-in overrides that route each
     /// launch site through agentns-claude. Never runs daemon-reload or restart.
     Route(RouteArgs),
+    /// Record and query per-session identity and syscall footprint.
+    Ledger(LedgerArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -496,6 +622,51 @@ enum OutputFormat {
 enum ProbeFormat {
     /// Human-readable text.
     Text,
+    /// Machine-readable JSON.
+    Json,
+}
+
+#[derive(Debug, Parser)]
+struct LedgerArgs {
+    #[command(subcommand)]
+    command: LedgerCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum LedgerCommand {
+    /// Open a ledger entry for the current session (call from SessionStart hook).
+    Open,
+    /// Close the ledger entry for the current session (call from SessionEnd hook).
+    Close,
+    /// List ledger entries.
+    List(LedgerListArgs),
+    /// Show a full ledger entry + delta for a given session id.
+    Show(LedgerShowArgs),
+    /// Print SessionStart + SessionEnd hook JSON for settings.json.
+    Install,
+}
+
+#[derive(Debug, Parser)]
+struct LedgerListArgs {
+    /// Output format.
+    #[arg(long, default_value = "table")]
+    format: LedgerFormat,
+
+    /// Show only sessions that never closed (SIGKILL casualties).
+    #[arg(long)]
+    open_only: bool,
+}
+
+#[derive(Debug, Parser)]
+struct LedgerShowArgs {
+    /// Session id (or prefix) to show.
+    id: String,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum LedgerFormat {
+    /// Human-readable table.
+    Table,
     /// Machine-readable JSON.
     Json,
 }

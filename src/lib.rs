@@ -30,6 +30,7 @@
 
 pub mod cap;
 pub mod config;
+pub mod ledger;
 pub mod model;
 pub mod planner;
 pub mod probe;
@@ -46,9 +47,15 @@ pub use model::{
 };
 pub use planner::{intent_for, plan};
 pub use probe::{
-    apply_docket_op, classify, verdict, Counters, DocketOp, FakeNsReader, InitReason,
-    NsReading, NsState, ProbeOutput, ProcReader, RealProcReader, Verdict,
+    apply_docket_op, classify, verdict, Counters as ProbeCounters, DocketOp, FakeNsReader,
+    InitReason, NsReading, NsState, ProbeOutput, ProcReader, RealProcReader, Verdict,
     INIT_AGENT_INODE,
 };
 pub use route::{apply_route, render_dropin, DropIn, RouteError, SystemdSource};
 pub use source::{FakeSource, LaunchSiteSource};
+
+pub use ledger::{
+    cmd_close, cmd_install, cmd_open, delta, summarize, CloseInfo, CounterReader, Counters,
+    EntrySummary, FakeCounterReader, FakeStore, FsStore, LedgerEntry, LedgerError, LedgerStore,
+    RealCounterReader,
+};
