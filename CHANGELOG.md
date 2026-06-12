@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.7.0 — 2026-06-12
+
+christen-detect: probe subcommand — NS classifier + docket edge-trigger
+
+Adds `christen probe [--pid N] [--emit] [--format json]` which reads the
+`/proc` agent-namespace surface for the current process, classifies it as
+`init`/`live`/`absent`/`malformed` with correct prose (never "registration
+failed"), and optionally applies a docket edge-trigger. Pure `classify` +
+injectable `ProcReader` trait. Anti-regression invariant asserted by test.
+Tests AC1-AC6 all pass; AC7 (real-proc, wintermute kernel) deferred.
+
 ## v0.6.0 — 2026-06-12
 
 christen-route: docs(route) add christen route section to README (AC8)
