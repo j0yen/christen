@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.1 — 2026-06-12
+
+feat(ledger): add README ledger section (AC8)
+
+Documents the LedgerEntry schema, open-only-as-SIGKILL-signal semantics,
+agentns-doctor receipt relationship, session id attribution to agorabus/
+memlog/provfs, and full CLI usage examples. Ledger module + tests (AC1-6)
+were already in-tree; this commit completes the missing documentation AC.
+
 ## v0.2.0 — 2026-06-09
 
 feat(cap): add `christen cap` subcommand — detect cap_sys_admin+ep file capability on launcher binaries, print exact `sudo setcap` command (never auto-executes), verify via sbx/agent_session read. AC1-5 tests green; AC6 deferred (wintermute kernel required).
