@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.6.0 — 2026-06-12
+
+christen-route: docs(route) add christen route section to README (AC8)
+
+Route subcommand (SystemdSource + render_dropin + apply_route, ACs 1-6) was
+already in-tree from v0.3.0. This commit adds the missing README documentation
+(AC8): drop-in format, print-vs-apply boundary, systemd-analyze verify gate,
+and christen cap prerequisite. All route tests green (AC1-AC6).
+
 ## v0.5.0 — 2026-06-12
 
 docs(route): add christen route section to README (AC8)
