@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.0 — 2026-06-12
+
+docs(route): add christen route section to README (AC8)
+
+Documents the drop-in format (clear-then-set ExecStart= pair), the print-vs-apply
+boundary, the systemd-analyze verify gate, and the christen cap prerequisite.
+Route implementation (SystemdSource, render_dropin, apply_route) + tests (AC1-6)
+were already in-tree from v0.3.0; this commit completes the final documentation AC.
+
 ## v0.4.1 — 2026-06-12
 
 feat(ledger): add README ledger section (AC8)
