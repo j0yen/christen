@@ -192,6 +192,90 @@ all capabilities before exec-ing into the actual launcher.
 `agentns-claude` as documented in the source.  The setuid-helper path is
 recorded here as an open decision; no code path auto-installs either.
 
+## christen ledger — per-session identity and footprint recorder
+
+`christen ledger` records each session's true identity and syscall footprint.
+At session birth it writes a `LedgerEntry`; at session end it patches it with
+final counters. Entries persist under `~/.claude/christen/ledger/<session_id>.json`.
+
+### Entry schema
+
+```json
+{
+  "session_id": "deadbeefcafe0001",
+  "intent":     "build",
+  "budget":     "normal",
+  "opened_at":  1700000000,
+  "closed_at":  1700000120,
+  "start": { "total_syscalls": 0, "openat_count": 0, "write_bytes": 0,
+              "connect_count": 0, "unlink_count": 0, "fork_count": 0,
+              "elapsed_ns": 0 },
+  "end":   { "total_syscalls": 500, "openat_count": 40, "write_bytes": 65536,
+              "connect_count": 3, "unlink_count": 0, "fork_count": 1,
+              "elapsed_ns": 120000000000 },
+  "kernel": "6.9.0-wintermute"
+}
+```
+
+`closed_at` and `end` are omitted when the session is still open. A session
+that never received a `close` call (killed by SIGKILL / cgroup teardown) will
+have no `closed_at` — this is a signal, not a bug.
+
+### Open-only entries as SIGKILL signals
+
+`christen ledger list --open-only` shows sessions that opened but never
+closed. Headless build ticks are killed by cgroup teardown before graceful
+hooks run, so every headless tick appears here. Persistent open entries point
+to SIGKILL casualties rather than normal exits.
+
+### Relationship to agentns-doctor receipt
+
+`agentns-doctor receipt` already snapshots agent-namespace counters to a JSON
+ledger (session receipt). `christen ledger` is the *wiring*: it calls the
+snapshot at the right moments (SessionStart / SessionEnd hooks), keys entries
+by the true session id, and accumulates them under one directory for
+cross-session queries.
+
+### Session id attribution
+
+The ledger key is the same id that agorabus, memlog, and provfs attribute
+syscalls to. When `christen-route` + `christen-cap` are in place, this id is
+non-zero and all three subsystems converge on the same session. Without
+routing the id is `0…0` and `christen ledger open` exits with an error
+(inert — it does not write a zero-keyed entry).
+
+### Usage
+
+```sh
+# Open a ledger entry for the current session (call from SessionStart hook)
+christen ledger open
+
+# Close the ledger entry for the current session (call from SessionEnd hook)
+christen ledger close
+
+# List all sessions (table)
+christen ledger list
+
+# List only sessions that never closed (SIGKILL casualties)
+christen ledger list --open-only
+
+# List as JSON (one object per session + EntrySummary fields)
+christen ledger list --format json
+
+# Show a full entry + delta for a given session id
+christen ledger show deadbeefcafe0001
+
+# Print settings.json hook entries (never writes anything)
+christen ledger install
+```
+
+### Hook installer (print-only)
+
+`christen ledger install` prints the `settings.json` `SessionStart` and
+`SessionEnd` hook entries and a note that they are inert until `christen-route`
+and `christen-cap` make the session id real. It never writes to `~/.claude`
+or shells any command.
+
 ## Install
 
 ```sh
