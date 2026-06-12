@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.0 — 2026-06-12
+
+christen-detect: probe subcommand — NS classifier + docket edge-trigger
+
+Extends christen to v0.7.0 with `christen probe [--pid N] [--emit] [--format json]`.
+The probe reads /proc agent-namespace surface, classifies it as init/live/absent/malformed
+with correct prose (never "registration failed"), and optionally applies a docket
+edge-trigger via the `docket` CLI (non-fatal if absent). Pure classify() function
+accepts injected NsReading + ProcReader trait for testability.
+AC1-AC6 all pass; AC7 (real-proc on wintermute kernel) deferred.
+
 ## v0.7.0 — 2026-06-12
 
 christen-detect: probe subcommand — NS classifier + docket edge-trigger
